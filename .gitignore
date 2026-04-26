@@ -1,0 +1,14 @@
+# Project metadata (local only)
+CLAUDE.md
+
+# Logs
+logs/
+*.log
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+*.pem
