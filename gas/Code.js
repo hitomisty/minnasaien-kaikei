@@ -116,7 +116,7 @@ function analyzeReceiptWithGemini(file, apiKey, categories) {
     }],
     generationConfig: {
       temperature: 0.0,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 2048,
     },
   };
 
@@ -153,7 +153,11 @@ function buildGeminiPrompt(categories) {
     '3. date は 2026-03-15 のような ISO 形式、なければ空文字列。',
     '4. amount は税込金額の整数のみ。通貨記号や小数点は除く。見つからなければ空文字列。',
     '5. category は以下のリストから最適なものを1つだけ選ぶこと: ' + categoryList + '。該当がなければ "その他"。',
-    '6. purpose は用途・内容を日本語で簡潔に記載する。',
+    '6. purpose は用途・内容を日本語で簡潔に記載する（以下のルールに従う）：',
+    '   - 同じ種類の品目はまとめて表記（例：「野菜苗、ビニール袋」）',
+    '   - 日用品（袋・タオル・カップ等）は「消耗品」等の総称で表記してもよい',
+    '   - 高額なものや他と種類が異なる特殊なものは個別に記載（例：「野菜苗、シャベル」）',
+    '   - 全体で3〜4点程度にまとめる',
     '7. note は必要なら補足情報を入れる。',
     '8. 空欄の項目は必ず空文字列として出力する。',
     '画像の情報から日付、金額、用途を正確に抽出してください。',
@@ -265,9 +269,7 @@ function sanitizeForFilename(text) {
 }
 
 function moveToFolder(file, folder, newName) {
-  const existingParent = file.getParents().next();
-  folder.addFile(file);
-  existingParent.removeFile(file);
+  file.moveTo(folder);
   file.setName(newName);
 }
 
