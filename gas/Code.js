@@ -13,6 +13,7 @@ const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models
 function processReceiptImages() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const settings = loadSettings(spreadsheet);
+  validateSettings(settings);
   const inputFolder = getFolderById(settings.inputFolderId);
   const savedFolder = getFolderById(settings.savedFolderId);
   const errorFolder = getFolderById(settings.errorFolderId);
@@ -25,15 +26,9 @@ function processReceiptImages() {
     const file = files.next();
     const originalName = file.getName();
 
-    if (isDuplicateFile(originalName, savedFolder, errorFolder)) {
-      moveToError(file, errorFolder, 'ERROR_DUPLICATE_' + originalName);
-      errors.push('重複ファイル検出: ' + originalName);
-      continue;
-    }
-
     try {
       const rawText = analyzeReceiptWithGemini(file, settings.apiKey, categories);
-      const parsed = parseReceiptJson(rawText);
+      const parsed = parseReceiptJson(rawText, categories);
       const rowNumber = writeExpenseRow(spreadsheet, parsed, file.getUrl());
       const newName = buildSavedFileName(rowNumber, parsed, file.getName());
       moveToFolder(file, savedFolder, newName);
@@ -73,6 +68,23 @@ function loadSettings(spreadsheet) {
   };
 }
 
+function validateSettings(settings) {
+  const requiredFields = [
+    { key: 'apiKey', label: 'Gemini APIキー' },
+    { key: 'inputFolderId', label: '01_支出記入用画像フォルダID' },
+    { key: 'savedFolderId', label: '02_支出保存用画像フォルダID' },
+    { key: 'errorFolderId', label: '03_取込エラー画像フォルダID' },
+  ];
+
+  const missing = requiredFields
+    .filter(function (field) { return !settings[field.key]; })
+    .map(function (field) { return field.label; });
+
+  if (missing.length > 0) {
+    throw new Error('設定シートに以下の項目が未設定です: ' + missing.join(', '));
+  }
+}
+
 function loadCategoryList(spreadsheet) {
   const sheet = spreadsheet.getSheetByName(SETTINGS_SHEET_NAME);
   if (!sheet) return [];
@@ -99,10 +111,6 @@ function getFolderById(folderId) {
   }
 }
 
-function isDuplicateFile(fileName, savedFolder, errorFolder) {
-  return savedFolder.getFilesByName(fileName).hasNext() || errorFolder.getFilesByName(fileName).hasNext();
-}
-
 function analyzeReceiptWithGemini(file, apiKey, categories) {
   const imageBase64 = Utilities.base64Encode(file.getBlob().getBytes());
   const prompt = buildGeminiPrompt(categories);
@@ -117,17 +125,19 @@ function analyzeReceiptWithGemini(file, apiKey, categories) {
     generationConfig: {
       temperature: 0.0,
       maxOutputTokens: 2048,
+      thinkingConfig: { thinkingBudget: 0 },
     },
   };
 
   const options = {
     method: 'post',
     contentType: 'application/json',
+    headers: { 'x-goog-api-key': apiKey },
     payload: JSON.stringify(requestBody),
     muteHttpExceptions: true,
   };
 
-  const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + encodeURIComponent(apiKey), options);
+  const response = UrlFetchApp.fetch(GEMINI_ENDPOINT, options);
   const status = response.getResponseCode();
   const text = response.getContentText();
 
@@ -170,9 +180,11 @@ function extractOutputText(responseObject) {
   }
   const candidate = responseObject.candidates[0];
   if (candidate.content && candidate.content.parts && candidate.content.parts.length) {
-    const firstPart = candidate.content.parts[0];
-    if (firstPart && firstPart.text) {
-      return firstPart.text;
+    const combinedText = candidate.content.parts
+      .map(function (part) { return part && part.text ? part.text : ''; })
+      .join('');
+    if (combinedText) {
+      return combinedText;
     }
   }
   if (candidate.output) {
@@ -184,7 +196,7 @@ function extractOutputText(responseObject) {
   return null;
 }
 
-function parseReceiptJson(rawText) {
+function parseReceiptJson(rawText, categories) {
   const jsonText = extractJson(rawText.trim());
   if (!jsonText) {
     throw new Error('JSON抽出に失敗しました: ' + rawText);
@@ -197,10 +209,13 @@ function parseReceiptJson(rawText) {
     throw new Error('JSON解析エラー: ' + e.message + '\n' + jsonText);
   }
 
+  const category = parsed.category ? parsed.category.toString().trim() : '';
+  const isKnownCategory = Array.isArray(categories) && categories.indexOf(category) !== -1;
+
   return {
     date: normalizeDate(parsed.date || ''),
     amount: normalizeAmount(parsed.amount || ''),
-    category: parsed.category ? parsed.category.toString().trim() : '',
+    category: isKnownCategory ? category : 'その他',
     purpose: parsed.purpose ? parsed.purpose.toString().trim() : '',
     note: parsed.note ? parsed.note.toString().trim() : '',
   };
